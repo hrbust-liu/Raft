@@ -19,8 +19,8 @@ const (
 )
 // 发送的数据
 type ApplyMsg struct {
-	CommandValid bool
-	Command interface{}
+	CommandValid bool	// 数据是否有效
+	Command interface{}	// 真正的命令,(kvraft中的Op)
 	CommandIndex int
 }
 
@@ -33,7 +33,7 @@ type Raft struct {
 	timer*		time.Timer			// 定时器,timer.C会进行通知
 	stat		int					// 状态
 
-	applyCh		chan	ApplyMsg
+	applyCh		chan	ApplyMsg	// commit消息放入该通道
 	appendCh	chan	struct{}
 	voteCh		chan	struct{}	// 等待投票管道
 	commitCh	chan	struct{}	// 等待commit管道
@@ -51,7 +51,7 @@ type Raft struct {
 type Entry struct {
 	Term	int			// 提交时的term
 	Index	int			// 本个数据读序号
-	Command	interface{}	// 数据内容
+	Command	interface{}	// 数据内容,(kvraft中的Op)
 	Commited bool
 }
 

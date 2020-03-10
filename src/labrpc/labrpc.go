@@ -69,7 +69,7 @@ type Network struct {
 	ends			map[interface{}]*ClientEnd		// endname->ClientEnd
 	enabled			map[interface{}]bool			// 是否可到达
 	servers			map[interface{}]*Server			// 节点->所有类型 如 node(1)-> (Raft,...)
-	connections		map[interface{}]interface{}
+	connections		map[interface{}]interface{}		// endname->servername(即 server编号)
 	endCh			chan	reqMsg					// 接收请求管道
 	done			chan	struct{}				// 终止管道
 	count			int32							// RPC请求的个数
@@ -274,7 +274,7 @@ func (rn *Network) DeleteServer(servername interface{}) {
 
 	rn.servers[servername] = nil
 }
-
+// 说明该endname(端口) 与 servername(server 编号)对应
 func (rn *Network) Connect(endname interface{}, servername interface{}) {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()

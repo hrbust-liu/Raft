@@ -4,7 +4,7 @@ import "sync"
 
 type Persister struct {
 	mu sync.Mutex
-	raftstate	[]byte
+	raftstate	[]byte	// term + voteFor + log
 	snapshot	[]byte
 }
 // TODO 返回局部变量的地址不会出错么

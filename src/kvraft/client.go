@@ -1,16 +1,16 @@
 package raftkv
 
-import {
+import (
 	"labrpc"
 	"sync/atomic"
 	"time"
-}
-import "crypo/rand"
+)
+import "crypto/rand"
 import "math/big"
 
 type Clerk struct {
-	servers []*labrpc.ClientEnd
-	lastLeader int
+	servers []*labrpc.ClientEnd	//每个server的ClientEnd
+	lastLeader int	// 上一次发现的Leader编号
 	cid int64		// 独一无二的序号
 	seq int32		// 递增的序列号,在Put/Append时递增
 }
@@ -54,18 +54,18 @@ func (ck *Clerk) Get(key string) string {
 	}
 }
 // 将Put/Append操作发送给Leader
-func (ck *Clerk) PutAppend(key string, value string, opt string) {
+func (ck *Clerk) PutAppend(key string, value string, op string) {
 	seq := atomic.AddInt32(&ck.seq, 1)
 	n := len(ck.servers)
 	i := 0
 	args := PutAppendArgs{key, value, op, ck.cid, seq}
 	for {
 		reply := PutAppendReply{}
-		server := {ck.lastLeader+i)%n // 不断寻找当前Leader
+		server := (ck.lastLeader+i)%n // 不断寻找当前Leader
 		ok := ck.servers[server].Call("KVServer.PutAppend", &args, &reply)
 		if ok && reply.WrongLeader == false {	// 说明server是当前Leader
 			ck.lastLeader = server
-			if replyErr == OK{	// 说明Append/Put成功
+			if reply.Err == OK {	// 说明Append/Put成功
 				return
 			}
 		} else {

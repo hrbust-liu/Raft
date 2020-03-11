@@ -29,7 +29,7 @@ type Op struct {	// 传递的命令,日志保存的command
 }
 
 func (a *Op) equals(b Op) bool {
-	return a.Seq == b.Seq && a.cid == b.Cid && a.Value == b.Value && a.Key == b.Key && a.Type == b.Type
+	return a.Seq == b.Seq && a.Cid == b.Cid && a.Value == b.Value && a.Key == b.Key && a.Type == b.Type
 }
 type KVServer struct {
 	mu		sync.Mutex
@@ -40,8 +40,8 @@ type KVServer struct {
 	maxraftstate	int
 
 	keyValue map[string] string	// 记录key/value对
-	getCh map[int]chan Op
-	cid_seq map[int64] int32
+	getCh map[int]chan Op		// 为每条命令创建通道，该命令完成commit以后，server收到通知, 并返回给clerk
+	cid_seq map[int64] int32	// 记录这个clerk id提交最大写seq
 	persister *raft.Persister
 
 	stat int
@@ -61,7 +61,7 @@ func (kv *KVServer) getAgreeCh(index int) chan Op{
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	reply.WrongLeader = false
 	seq, ok := kv.cid_seq[args.Cid]
-	if ok && seq > args.seq {
+	if ok && seq > args.Seq {	// 最新的数据都已经写进来了,因此你这个请求我可以完成
 		kv.mu.Lock()
 		reply.Value = kv.keyValue[args.Key]
 		reply.Err = OK
@@ -76,7 +76,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	} else {
 		ch := kv.getAgreeCh(index)
 		op := Op{}
-		DPrinf("select ")
+		DPrintf("select ")
 		select {	// 等待返回,当commit以后,便会返回
 		case op = <-ch:
 			reply.Err = OK
@@ -109,7 +109,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	} else {
 		ch := kv.getAgreeCh(index)
-		Op := Op{}
+		op := Op{}
 		DPrintf("select ")
 		select {	// 等待返回或者超时,会在commit以后返回
 		case op = <-ch:
@@ -166,7 +166,7 @@ func (kv *KVServer) waitSubmitLoop() {
 				if !ok || op.Seq >maxSeq{	// 如果该cid的最大seq没超过本个,则更新
 					switch op.Type {
 					case "Put":
-						kv.KeyValue[op.Key] = op.Value
+						kv.keyValue[op.Key] = op.Value
 					case "Append":
 						kv.keyValue[op.Key] += op.Value
 					}
@@ -192,23 +192,25 @@ func (kv *KVServer) readSnapShot(data []byte) {
 	var keyValue map[string] string
 
 	err := d.Decode(&cid_seq)
-	if err == nil
+	if err == nil{
 		kv.cid_seq = cid_seq
-	else
+	} else {
 		log.Fatal("decode cid_seq error:", err)
+	}
 
 	err = d.Decode(&keyValue)
-	if err == nil
+	if err == nil{
 		kv.keyValue = keyValue
-	else
+	} else {
 		log.Fatal("decode keyValue err:", err)
+	}
 
 }
 // 启动KVServer
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
 	labgob.Register(Op{})
 
-	kv: = new(KVServer)
+	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 

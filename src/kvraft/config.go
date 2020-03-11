@@ -28,7 +28,7 @@ func makeSeed() int64 {
 	x := bigx.Int64()
 	return x
 }
-
+// 随机交换
 func random_handles(kvh []*labrpc.ClientEnd) []*labrpc.ClientEnd {
 	sa := make([]*labrpc.ClientEnd, len(kvh))
 	copy(sa, kvh)
@@ -49,7 +49,7 @@ type config struct {
 	endnames	[][]string			// endname
 	clerks		map[*Clerk][]string	// clerk->endname
 	nextClientId	int				// 再次创建Client的id
-	maxraftState	int
+	maxraftstate	int
 	start			time.Time		// 创建环境的时间
 
 	t0		time.Time			// 启动时间
@@ -136,6 +136,7 @@ func (cfg *config) disconnect(i int, from []int) {
 	defer cfg.mu.Unlock()
 	cfg.disconnectUnlocked(i, from)
 }
+// 将 1~n放入数组
 func (cfg *config) All() []int {
 	all := make([]int, cfg.n)
 	for i := 0; i < cfg.n; i++ {
@@ -143,7 +144,7 @@ func (cfg *config) All() []int {
 	}
 	return all
 }
-
+// 使用无所connect让n个点互相连接
 func (cfg *config) ConnectAll() {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
@@ -164,20 +165,20 @@ func (cfg *config) partition(p1 []int, p2 []int) {
 		cfg.connectUnlocked(p2[i], p2)
 	}
 }
-// 制作客户端,创建endname,绑定到network
+// 制作客户端,为Clerk创建连接到不同节点(to数组则是不同节点)的endname, 绑定到network，并将clerk与to节点连接
 func (cfg *config) makeClient(to []int) *Clerk {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
 
 	ends := make([]*labrpc.ClientEnd, cfg.n)
 	endnames := make([]string, cfg.n)
-	for j := 0; j< cfg.n;j++ {
-		endnames[j] = randstring(20)		// 将endname创建，并让network进行记录,理解为与j节点通信的端口
+	for j := 0; j< cfg.n;j++ {				// 告诉network, 我将持有这个endname(端口),以后我向该endname(端口)通信,就是向j通信
+		endnames[j] = randstring(20)
 		ends[j] = cfg.net.MakeEnd(endnames[j])
 		cfg.net.Connect(endnames[j], j)
 	}
 
-	ck := MakeClerk(random_handles(ends))
+	ck := MakeClerk(random_handles(ends))	// 将自己的ends打乱，我只需要知道我有这些端口(通向不同server)就好
 	cfg.clerks[ck] = endnames
 	cfg.nextClientId++
 	cfg.ConnectClientUnlocked(ck, to)
@@ -243,7 +244,7 @@ func (cfg *config) ShutdownServer(i int) {
 		cfg.kvservers[i] = nil
 	}
 }
-// 创建server,创建与其他server的借口(endname)
+// 创建server,创建与其他server的端口(endname)
 func (cfg *config) StartServer(i int) {
 	cfg.mu.Lock()
 
@@ -254,7 +255,7 @@ func (cfg *config) StartServer(i int) {
 
 	ends := make([]*labrpc.ClientEnd, cfg.n)		// 创建端口,并与不同server连接
 	for j := 0; j < cfg.n; j++ {
-		end[j] = cfg.net.MakeEnd(cfg.endnames[i][j])
+		ends[j] = cfg.net.MakeEnd(cfg.endnames[i][j])
 		cfg.net.Connect(cfg.endnames[i][j], j)
 	}
 
@@ -307,8 +308,8 @@ func (cfg *config) make_partition() ([]int, []int) {
 	return p1, p2
 }
 var ncpu_once sync.Once
-// 制作环境
-func make_config(t *testing.T, n int, unrelibale bool, maxraftstate int) *config {
+// 制作环境:创建network,n个server,节点互相连接
+func make_config(t *testing.T, n int, unreliable bool, maxraftstate int) *config {
 	ncpu_once.Do(func() {
 		if runtime.NumCPU() <2 {
 			fmt.Printf("warning: only one CPU, which may conceal locking bugs\n")
@@ -322,7 +323,7 @@ func make_config(t *testing.T, n int, unrelibale bool, maxraftstate int) *config
 	cfg.n = n
 	cfg.kvservers = make([]*KVServer, cfg.n)
 	cfg.saved = make([]*raft.Persister, cfg.n)
-	cfg.endnames = make([][]]string, cfg.n)
+	cfg.endnames = make([][]string, cfg.n)
 	cfg.clerks = make(map[*Clerk][]string)
 	cfg.nextClientId = cfg.n + 1000
 	cfg.maxraftstate = maxraftstate
@@ -357,11 +358,11 @@ func (cfg *config) end() {
 	cfg.checkTimeout()
 	if cfg.t.Failed() == false {
 		t := time.Since(cfg.t0).Seconds()
-		nppers := cfg.n
-		nrprc := cfg.rpcTotal() - cfg.rpcs0
+		npeers := cfg.n
+		nrpc := cfg.rpcTotal() - cfg.rpcs0
 		ops := atomic.LoadInt32(&cfg.ops)
 
 		fmt.Printf("  ...Passed..")
 		fmt.Printf("  %4.1f %d %5d %4d\n", t, npeers, nrpc, ops)
 	}
-
+}

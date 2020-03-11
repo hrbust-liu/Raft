@@ -45,7 +45,7 @@ func (ps *Persister) SaveStateAndSnapshot(state []byte, snapshot []byte) {
 	ps.snapshot = snapshot
 }
 
-func (ps *Persister) ReadSnpashot() []byte {
+func (ps *Persister) ReadSnapshot() []byte {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	return ps.snapshot

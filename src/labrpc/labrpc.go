@@ -25,7 +25,7 @@ type replyMsg struct {	// 接收的数据
 
 type ClientEnd struct {
 	endname interface{}
-	ch		chan	reqMsg	// 发送数据,已经连接到NewWork的endCh
+	ch		chan	reqMsg	// 发送数据,已经连接到NewWork的endCh,所有RPC-Call都发送本通道
 	done	chan	struct{}
 }
 // 请求 终端e 去执行
@@ -63,10 +63,10 @@ func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bo
 
 type Network struct {
 	mu				sync.Mutex
-	reliable		bool
+	reliable		bool							// 网络是否可达
 	longDelays		bool
 	longReordering	bool							// 网络暂停一段时间
-	ends			map[interface{}]*ClientEnd		// endname->ClientEnd
+	ends			map[interface{}]*ClientEnd		// endname->ClientEnd的映射
 	enabled			map[interface{}]bool			// 是否可到达
 	servers			map[interface{}]*Server			// 节点->所有类型 如 node(1)-> (Raft,...)
 	connections		map[interface{}]interface{}		// endname->servername(即 server编号)
@@ -74,7 +74,7 @@ type Network struct {
 	done			chan	struct{}				// 终止管道
 	count			int32							// RPC请求的个数
 }
-// 启动网络,同时监听请求管道和结束管道
+// 启动网络,同时监听请求管道和结束管道,相当于网络管理者，实时通过endCh监听RPC-Call
 func MakeNetwork() *Network {
 	rn := &Network{}
 	rn.reliable = true
@@ -225,11 +225,11 @@ func (rn *Network) MakeEnd(endname interface{}) *ClientEnd {
 		log.Fatalf("MakeEnd %v already exists\n", endname)
 	}
 
-	e := &ClientEnd{}
+	e := &ClientEnd{}	// ClientEnd 初始化(endname, ch, done)
 	e.endname = endname
 	e.ch = rn.endCh
 	e.done = rn.done
-	rn.ends[endname] = e
+	rn.ends[endname] = e	// network记录映射 endname->clientEnd
 	rn.enabled[endname] = false
 	rn.connections[endname] = nil
 

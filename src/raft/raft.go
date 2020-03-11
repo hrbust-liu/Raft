@@ -22,6 +22,7 @@ type ApplyMsg struct {
 	CommandValid bool	// 数据是否有效
 	Command interface{}	// 真正的命令,(kvraft中的Op)
 	CommandIndex int
+	Data	[]byte
 }
 
 type Raft struct {
@@ -84,6 +85,25 @@ func getRandomTimeOut() time.Duration{
 	timeout := time.Millisecond*time.Duration(r.Int63n(500)+250)
 	return timeout
 }
+// 将term, voteFor, log进行编码
+func (rf *Raft) getPersistData() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	err := e.Encode(rf.currentTerm)
+	if err != nil {
+		log.Fatal("encode term error:", err)
+	}
+	err = e.Encode(rf.voteFor)
+	if err != nil {
+		log.Fatal("encode voteFor error:", err)
+	}
+	err = e.Encode(rf.log)
+	if err != nil {
+		log.Fatal("encode log error:", err)
+	}
+	data := w.Bytes()
+	return data
+}
 func (rf *Raft) persist(){
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
@@ -127,6 +147,30 @@ func (rf *Raft) readPersist(data []byte) {
 	} else {
 		rf.log = entries
 	}
+}
+// 保存(State = (term, voteFor, log) , snapshotData = (cis_seq, kv))其中kv记录index之前的数据,之后的仍然用log记录
+func (rf *Raft) TakeSnapShot(index int, cid_seq map[int64]int32, kv map[string]string) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	FirstIndex := rf.log[0].Index
+	if index < FirstIndex {
+		fmt.Printf("index:%v, FirstIndex:%v\n", index, FirstIndex)
+		return
+	}
+	rf.log = rf.log[index - FirstIndex:]
+
+	w2 := new(bytes.Buffer)
+	e2 := labgob.NewEncoder(w2)
+	err := e2.Encode(cid_seq)
+	if err != nil {
+		log.Fatal("encode KVServer's data error:", err)
+	}
+	err = e2.Encode(kv)
+	if err != nil {
+		log.Fatal("encode KVServer's data error:", err)
+	}
+	snapshotsData := w2.Bytes()
+	rf.persister.SaveStateAndSnapshot(rf.getPersistData(), snapshotsData)
 }
 // 发送数据/作为心跳时 发送参数
 type AppendEntriesArgs struct {

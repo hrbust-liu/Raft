@@ -67,6 +67,7 @@ func (cfg *config) cleanup() {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
 	for i := 0; i <len(cfg.kvservers); i++ {
+		fmt.Printf("cleanup will kill %v",i)
 		if cfg.kvservers[i] != nil {
 			cfg.kvservers[i].Kill()
 		}
@@ -79,6 +80,7 @@ func (cfg *config) LogSize() int {
 	logsize := 0
 	for i := 0; i< cfg.n; i++ {
 		n := cfg.saved[i].RaftStateSize()
+		fmt.Printf("%v logsize = %v\n", i, n)
 		if n > logsize {
 			logsize = n
 		}
@@ -154,6 +156,7 @@ func (cfg *config) ConnectAll() {
 }
 // 进行分区,p1内部互相通信,p2内部互相通信,p1与p2不通信
 func (cfg *config) partition(p1 []int, p2 []int) {
+	DPrintf("make partition p1 = %v, p2 = %v\n", p1, p2)
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
 	for i := 0; i < len(p1); i++ {

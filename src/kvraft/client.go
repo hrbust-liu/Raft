@@ -1,6 +1,7 @@
 package raftkv
 
 import (
+	"fmt"
 	"labrpc"
 	"sync/atomic"
 	"time"
@@ -9,10 +10,10 @@ import "crypto/rand"
 import "math/big"
 
 type Clerk struct {
-	servers []*labrpc.ClientEnd	//每个server的ClientEnd
+	servers []*labrpc.ClientEnd	// 每个server的ClientEnd
 	lastLeader int	// 上一次发现的Leader编号
 	cid int64		// 独一无二的序号
-	seq int32		// 递增的序列号,在Put/Append时递增
+	seq int32		// clerk拥有独立递增的序列号,在Put/Append时递增
 }
 
 func nrand() int64{
@@ -42,14 +43,15 @@ func (ck *Clerk) Get(key string) string {
 			server := (ck.lastLeader + i)%n
 			ok := ck.servers[server].Call("KVServer.Get", &args, &reply)
 			if ok && reply.WrongLeader == false {	// 说明server是当前Leader
-				ck.lastLeader = server
 				if reply.Err == OK {	// 说明操作成功
+					ck.lastLeader = server
 					return reply.Value
 				}
 			} else {
 				i++
 			}
 			time.Sleep(100*time.Millisecond)
+			fmt.Println("Get fail!! 需要再次提交\n")
 		}
 	}
 }
@@ -64,14 +66,15 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		server := (ck.lastLeader+i)%n // 不断寻找当前Leader
 		ok := ck.servers[server].Call("KVServer.PutAppend", &args, &reply)
 		if ok && reply.WrongLeader == false {	// 说明server是当前Leader
-			ck.lastLeader = server
 			if reply.Err == OK {	// 说明Append/Put成功
+				ck.lastLeader = server
 				return
 			}
 		} else {
 			i++
 		}
 		time.Sleep(100*time.Millisecond)
+		fmt.Println("Put fail!! 需要再次提交\n")
 	}
 }
 

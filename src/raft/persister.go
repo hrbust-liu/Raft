@@ -4,8 +4,8 @@ import "sync"
 
 type Persister struct {
 	mu sync.Mutex
-	raftstate	[]byte	// term + voteFor + log
-	snapshot	[]byte
+	raftstate	[]byte	// term + voteFor + log	记录了当前的状态 如:当前term, 投票给谁, 没有形成快照的log
+	snapshot	[]byte	// ciq_seq + kv			记录了数据 如:每个clerk最大seq, key-value映射
 }
 // TODO 返回局部变量的地址不会出错么
 func MakePersister() *Persister{

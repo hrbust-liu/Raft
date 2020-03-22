@@ -1,5 +1,6 @@
 package labrpc
 
+//import "fmt"
 import "labgob"
 import "bytes"
 import "reflect"
@@ -19,7 +20,7 @@ type reqMsg struct {	// 发送的数据
 }
 
 type replyMsg struct {	// 接收的数据
-	ok		bool
+	ok		bool		// 在网络(reliable)不可达或者server死掉情况返回false
 	reply	[]byte
 }
 
@@ -191,6 +192,9 @@ func (rn *Network) ProcessReq(req reqMsg) {
 
 		serverDead = rn.IsServerDead(req.endname, servername, server)
 
+		//fmt.Printf("endname = %v, servername = %v, server = %v is dead = %v replyOk = %v reliable = %v longreordering = %v\n",
+		//					req.endname, servername, server, serverDead, replyOK, reliable, longreordering)
+
 		if replyOK == false || serverDead == true {
 			req.replyCh <- replyMsg{false, nil}
 		} else if reliable == false && (rand.Int()%1000) < 100 {
@@ -241,31 +245,6 @@ func (rn *Network) AddServer(servername interface{}, rs *Server) {
 	defer rn.mu.Unlock()
 
 	rn.servers[servername] = rs
-}
-// 分离如Call("Raft.AppendEntries",arg1,arg2)
-func (rs *Server) dispatch(req reqMsg) replyMsg {
-	rs.mu.Lock()
-	rs.count += 1
-
-	dot := strings.LastIndex(req.svcMeth, ".")
-	serviceName := req.svcMeth[:dot]		// Raft
-	methodName := req.svcMeth[dot+1:]		// AppendEntries
-
-	service, ok := rs.services[serviceName]
-
-	rs.mu.Unlock()
-
-	if ok {
-		return service.dispatch(methodName, req)
-	} else {
-		choices := []string{}
-		for k, _ := range rs.services {
-			choices = append(choices, k)
-		}
-		log.Fatalf("labrpc.Server.dispatch(): unknown service %v in %v.%v; expectiong one of %v\n",
-			serviceName, serviceName, methodName, choices)
-		return replyMsg{false, nil}
-	}
 }
 
 func (rn *Network) DeleteServer(servername interface{}) {
@@ -318,6 +297,32 @@ func (rs *Server) AddService(svc *Service) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	rs.services[svc.name] = svc
+}
+
+// 分离如Call("Raft.AppendEntries",arg1,arg2)
+func (rs *Server) dispatch(req reqMsg) replyMsg {
+	rs.mu.Lock()
+	rs.count += 1
+
+	dot := strings.LastIndex(req.svcMeth, ".")
+	serviceName := req.svcMeth[:dot]		// Raft
+	methodName := req.svcMeth[dot+1:]		// AppendEntries
+
+	service, ok := rs.services[serviceName]
+
+	rs.mu.Unlock()
+
+	if ok {
+		return service.dispatch(methodName, req)
+	} else {
+		choices := []string{}
+		for k, _ := range rs.services {
+			choices = append(choices, k)
+		}
+		log.Fatalf("labrpc.Server.dispatch(): unknown service %v in %v.%v; expectiong one of %v\n",
+			serviceName, serviceName, methodName, choices)
+		return replyMsg{false, nil}
+	}
 }
 
 func (rs *Server) GetCount() int {

@@ -67,11 +67,12 @@ func (cfg *config) cleanup() {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
 	for i := 0; i <len(cfg.kvservers); i++ {
-		fmt.Printf("cleanup will kill %v",i)
+		fmt.Printf("cleanup will kill %v\n",i)
 		if cfg.kvservers[i] != nil {
 			cfg.kvservers[i].Kill()
 		}
 	}
+	fmt.Printf("cleanup all killed\n")
 	cfg.net.Cleanup()
 	cfg.checkTimeout()
 }

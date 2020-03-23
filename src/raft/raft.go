@@ -229,8 +229,8 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term int			// 当期iterm
 	Success bool		// 是否PrevLogIndex与PrevLogTerm一致，不一致代表需要中间部分数据
-	PrevIndex int		// 所需最小的log索引, 从这个索引后面开始给我数据就可以 
-	LastLogIndex int
+//	PrevIndex int		// 所需最小的log索引, 从这个索引后面开始给我数据就可以 
+	LastLogIndex int	// 最后一个log的index
 }
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
@@ -242,16 +242,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else if args.Term > rf.currentTerm && rf.stat != Dead{
 		rf.mu.Lock()
 		rf.currentTerm = args.Term
+		rf.voteFor = -1
+		rf.stat = Follower
 		rf.mu.Unlock()
-		rf.updateStatTo(Follower)
+		rf.persist()
+		//rf.updateStatTo(Follower)
 	}
-	//if args.Term >= rf.currentTerm && rf.stat != Dead{
 	if args.Term >= rf.currentTerm{
 		// 由于log不断增加，因此之前部分log可能会删除，log[0]的index可能不一样，PrevIndex则是当前raft下的偏移
 		FirstIndex := rf.log[0].Index
 		PrevIndex := args.PrevLogIndex - FirstIndex
 		if PrevIndex < 0 {
-			reply.PrevIndex = FirstIndex
+			reply.LastLogIndex = rf.log[len(rf.log)-1].Index
 			return
 		}
 		if args.PrevLogIndex != -1 && args.PrevLogTerm != -1 {
@@ -262,22 +264,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 					for tmp > 0 && rf.log[tmp].Term == rf.log[PrevIndex].Term {
 						tmp--
 					}
-					reply.PrevIndex = rf.log[tmp].Index
-				} else {					// 数据太新，中间就数据还没更新过来呢
-					reply.PrevIndex = rf.log[len(rf.log) - 1].Index
-				}
+					rf.log = rf.log[:tmp+1]
+				}					// else 说明数据太新，中间就数据还没更新过来呢
 			} else if rf.stat == Follower && rf.commitIndex <= args.LeaderCommit{
 				rf.mu.Lock()
 				reply.Success = true
 				j := 0
 				// 将已经存在且正确的数据保留，多余的舍弃
 				for i := PrevIndex + 1; i < len(rf.log) && j <len(args.Entries); i++{
-					// TODO 为啥不是 ||
-					if rf.log[i].Index == args.Entries[j].Index && rf.log[i].Term != args.Entries[j].Term {
+					if rf.log[i].Index != args.Entries[j].Index {
+						fmt.Printf("TODO Apend发现index不同\n")
+					}
+					if rf.log[i].Term != args.Entries[j].Term {
 						rf.log = rf.log[:i]
 						break
-					} else if rf.log[i].Index != args.Entries[j].Index {
-						fmt.Printf("TODO Apend发现index不同\n")
 					}
 					j++
 				}
@@ -327,17 +327,22 @@ type RequestVoteReply struct {
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	fmt.Printf("me = %v arg.term = %v my.term = %v\n",rf.me ,args.Term, rf.currentTerm)
 
 	reply.VoteGranted = false
 	if args.Term>rf.currentTerm{
 		rf.mu.Lock()
 		rf.currentTerm = args.Term
+		rf.voteFor = -1
+		rf.stat = Follower
 		rf.mu.Unlock()
-		rf.updateStatTo(Follower)
+		rf.persist()
+		//rf.updateStatTo(Follower)
 	}
 	if args.Term >= rf.currentTerm && (rf.voteFor == -1 || rf.voteFor == args.CandidateId){
-		lastLogIndex := len(rf.log) - 1
+		lastLogIndex := rf.log[len(rf.log) - 1].Index
 		lastLogTerm := rf.log[len(rf.log)-1].Term
+		fmt.Printf("me = %v, lastLogIndex = %v, lastLogTerm = %v\n",rf.me, lastLogIndex, lastLogTerm)
 		// arg日志更多，则投票
 		if (lastLogTerm < args.LastLogTerm) || (lastLogTerm == args.LastLogTerm && lastLogIndex <= args.LastLogIndex) {
 			reply.VoteGranted = true
@@ -456,6 +461,7 @@ func (rf *Raft) startElection() {
 			go func(server int) {
 				reply := RequestVoteReply{}
 				ok := rf.sendRequestVote(server, &args, &reply)
+				fmt.Printf("me = %v args = %v reply = %v ok = %v\n",rf.me,args, reply, ok)
 				if rf.stat == Candidate && ok && reply.Term == rf.currentTerm{
 					if reply.VoteGranted {	// else说明投票给别人
 						fmt.Printf("%v vote for me %v\n",server,rf.me)
@@ -466,8 +472,11 @@ func (rf *Raft) startElection() {
 				} else if rf.stat == Candidate && ok && reply.Term > rf.currentTerm {
 					rf.mu.Lock()
 					rf.currentTerm = reply.Term
+					rf.voteFor = -1
+					rf.stat = Follower
 					rf.mu.Unlock()
-					rf.updateStatTo(Follower)
+					rf.persist()
+					//rf.updateStatTo(Follower)
 				}
 			}(i)
 		}
@@ -501,14 +510,18 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 						}
 					}
 					ok := rf.sendAppendEntries(server, &args, &reply)
+					fmt.Printf("me = %v sendAppend ok = %v args = %v reply = %v\n", rf.me, ok, args, reply)
 					ok = ok && reply.Term == rf.currentTerm
 
 					// 有更新term, 自动降级为Follower
 					if reply.Term > rf.currentTerm {
 						rf.mu.Lock()
 						rf.currentTerm = reply.Term
+						rf.voteFor = -1
+						rf.stat = Follower
 						rf.mu.Unlock()
-						rf.updateStatTo(Follower)
+						rf.persist()
+						//rf.updateStatTo(Follower)
 					}
 					if ok && rf.stat == Leader {
 						if len(rf.log) > 0 && len(args.Entries) > 0 {
@@ -520,18 +533,21 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 						if rf.commitIndex < rf.matchIndex[server] {
 							rf.updateCommitIndex()
 							if rf.commitIndex <= reply.LastLogIndex {
-								rf.commitCh <- struct{}{}
+								rf.commitCh <-struct{}{}
 							}
 						}
 					}else if rf.stat==Leader{
-						if rf.nextIndex[server] > reply.PrevIndex + 1{
-							rf.nextIndex[server] = reply.PrevIndex + 1
-						} else {
-							rf.nextIndex[server] = max(rf.nextIndex[server] -1, 1)
+						// TODO
+						rf.nextIndex[server] = reply.LastLogIndex + 1
+						if rf.matchIndex[server] >= rf.nextIndex[server] {
+							fmt.Printf(" TODO server = %v may be error!!\n", server)
 						}
 					}
 				} else {
 					fmt.Printf("leader = %v Need Send Snapshot to %v\n", rf.me, server)
+					if rf.log[0].Index != rf.snapshottedIndex {
+						fmt.Printf("me = %v log0 != snapshottedindex\n", rf.me)
+					}
 					args := InstallSnapshotArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.log[0].Index, rf.log[0].Term, rf.persister.ReadSnapshot(), rf.log}
 					reply := InstallSnapshotReply{}
 					ok := rf.sendInstallSnapshot(server, &args, &reply)
@@ -539,8 +555,11 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 					if reply.Term > rf.currentTerm {
 						rf.mu.Lock()
 						rf.currentTerm = reply.Term
+						rf.voteFor = -1
+						rf.stat = Follower
 						rf.mu.Unlock()
-						rf.updateStatTo(Follower)
+						rf.persist()
+						//rf.updateStatTo(Follower)
 					}
 					if ok && rf.stat == Leader {
 						if reply.Success {
@@ -633,6 +652,7 @@ func (rf *Raft) updateCommitIndex() {
 // 无限循环在Follower/Candidate/Leader
 func (rf *Raft) mainLoop() {
 	for {
+//		fmt.Printf("my = %v log = %v\n", rf.me, rf.log)
 		switch rf.stat{
 		case Follower:
 			// 追加数据,或者请求投票会让时间重置,超时则成为候选人

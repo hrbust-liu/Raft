@@ -45,6 +45,7 @@ func (ck *Clerk) Get(key string) string {
 			if ok && reply.WrongLeader == false {	// 说明server是当前Leader
 				if reply.Err == OK {	// 说明操作成功
 					ck.lastLeader = server
+					fmt.Printf("success Get !!! \n")
 					return reply.Value
 				}
 			} else {
@@ -68,6 +69,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		if ok && reply.WrongLeader == false {	// 说明server是当前Leader
 			if reply.Err == OK {	// 说明Append/Put成功
 				ck.lastLeader = server
+				fmt.Printf("success Put !!! \n")
 				return
 			}
 		} else {

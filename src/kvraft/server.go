@@ -153,7 +153,7 @@ func (kv *KVServer) checkSnapShot(index int) {
 		return
 	}
 	// 不加锁可能导致有新操作到kv上，而log却没有以为某些操作没有做，从而多做了一次
-	kv.rf.TakeSnapShot(index, kv.cid_seq, kv.keyValue)
+	go kv.rf.TakeSnapShot(index, kv.cid_seq, kv.keyValue)
 }
 // 等待提交消息
 func (kv *KVServer) waitSubmitLoop() {

@@ -94,6 +94,7 @@ func (rf *Raft) getPersistData() []byte {
 	if e.Encode(rf.currentTerm) != nil ||
 		e.Encode(rf.voteFor) != nil ||
 		e.Encode(rf.log) != nil ||
+		e.Encode(rf.commitIndex) != nil ||
 		e.Encode(rf.snapshottedIndex) != nil {
 			log.Fatal("getPersistData error!!\n")
 	}
@@ -115,17 +116,19 @@ func (rf *Raft) readPersist(data []byte) {
 	var term int
 	var voteFor int
 	var entries []Entry
+	var commitIndex int
 	var snapshottedIndex int
 	if d.Decode(&term) != nil ||
 		d.Decode(&voteFor) != nil ||
 		d.Decode(&entries) != nil ||
+		d.Decode(&commitIndex) != nil ||
 		d.Decode(&snapshottedIndex) != nil {
 			log.Fatal("read Persist error!!\n");
 	} else {
 		rf.currentTerm = term
 		rf.voteFor = voteFor
 		rf.log = entries
-		rf.commitIndex = snapshottedIndex
+		rf.commitIndex = commitIndex
 		rf.lastApplied= snapshottedIndex
 		rf.snapshottedIndex = snapshottedIndex
 	}
@@ -238,6 +241,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
+		reply.LastLogIndex = rf.log[len(rf.log) - 1].Index
 		return
 	} else if args.Term > rf.currentTerm && rf.stat != Dead{
 		rf.mu.Lock()
@@ -272,9 +276,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				j := 0
 				// 将已经存在且正确的数据保留，多余的舍弃
 				for i := PrevIndex + 1; i < len(rf.log) && j <len(args.Entries); i++{
-					if rf.log[i].Index != args.Entries[j].Index {
-						fmt.Printf("TODO Apend发现index不同\n")
-					}
 					if rf.log[i].Term != args.Entries[j].Term {
 						rf.log = rf.log[:i]
 						break
@@ -297,8 +298,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 					rf.commitCh <- struct{}{}
 				}
 				rf.mu.Unlock()
+			} else {
+				fmt.Printf("TODO WT?? rfStat= %v, mycommitIndex = %v, args.commit = %v\n",rf.stat, rf.commitIndex, args.LeaderCommit)
 			}
 		}
+	} else {
+		fmt.Printf("TODO del 不存在吧\n")
 	}
 	reply.Term = rf.currentTerm
 	reply.LastLogIndex = rf.log[len(rf.log) - 1].Index
@@ -341,8 +346,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	if args.Term >= rf.currentTerm && (rf.voteFor == -1 || rf.voteFor == args.CandidateId){
 		lastLogIndex := rf.log[len(rf.log) - 1].Index
-		lastLogTerm := rf.log[len(rf.log)-1].Term
-		fmt.Printf("me = %v, lastLogIndex = %v, lastLogTerm = %v\n",rf.me, lastLogIndex, lastLogTerm)
+		lastLogTerm := rf.log[len(rf.log) - 1].Term
+		fmt.Printf("me = %v, myIndex = %v, argsIndex = %v, myTerm = %v argsTerm = %v\n",rf.me, lastLogIndex, args.LastLogIndex, lastLogTerm, args.LastLogTerm)
 		// arg日志更多，则投票
 		if (lastLogTerm < args.LastLogTerm) || (lastLogTerm == args.LastLogTerm && lastLogIndex <= args.LastLogIndex) {
 			reply.VoteGranted = true
@@ -353,16 +358,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 	}
 	reply.Term = rf.currentTerm
-	if args.Term < rf.currentTerm{
-		reply.VoteGranted = false
-	} else {
+	if args.Term >= rf.currentTerm {
 		go func() {
 			rf.voteCh <- struct{}{}
 		}()
 	}
 }
 
-func (rf *Raft) updateStatTo(stat int) {
+func (rf *Raft) updateStatTo(stat int) { // 慎用, 可能本来也是Follower直接退出, 导致voteFor未改成-1
 	if rf.stat == stat || rf.stat == Dead{
 		return
 	}
@@ -461,7 +464,6 @@ func (rf *Raft) startElection() {
 			go func(server int) {
 				reply := RequestVoteReply{}
 				ok := rf.sendRequestVote(server, &args, &reply)
-				fmt.Printf("me = %v args = %v reply = %v ok = %v\n",rf.me,args, reply, ok)
 				if rf.stat == Candidate && ok && reply.Term == rf.currentTerm{
 					if reply.VoteGranted {	// else说明投票给别人
 						fmt.Printf("%v vote for me %v\n",server,rf.me)
@@ -489,7 +491,7 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 			go func(server int) {
 				FirstIndex := rf.log[0].Index
 				// <说明日志已经删除，只能获取快照
-				fmt.Printf("Leader = %v peer %v nextIndex = %v, FirstIndex = %v\n", rf.me, server, rf.nextIndex[server], FirstIndex)
+				fmt.Printf("Leader = %v peer %v matchIndex = %v nextIndex = %v, FirstIndex = %v\n", rf.me, server, rf.matchIndex[server], rf.nextIndex[server], FirstIndex)
 				if rf.nextIndex[server] > FirstIndex {
 					args := AppendEntriesArgs{}
 					reply := AppendEntriesReply{}
@@ -510,7 +512,6 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 						}
 					}
 					ok := rf.sendAppendEntries(server, &args, &reply)
-					fmt.Printf("me = %v sendAppend ok = %v args = %v reply = %v\n", rf.me, ok, args, reply)
 					ok = ok && reply.Term == rf.currentTerm
 
 					// 有更新term, 自动降级为Follower
@@ -523,12 +524,13 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 						rf.persist()
 						//rf.updateStatTo(Follower)
 					}
-					if ok && rf.stat == Leader {
+					if ok && rf.stat == Leader && reply.Success == true{
 						if len(rf.log) > 0 && len(args.Entries) > 0 {
 							rf.nextIndex[server] = args.Entries[len(args.Entries) - 1].Index + 1
 							rf.matchIndex[server] = rf.nextIndex[server] - 1
 						}
 						fmt.Printf("Leader = %v, 给 %v 数据追加成功,matchIndex = %v, my commitIndex = %v\n",rf.me, server, rf.matchIndex[server], rf.commitIndex)
+
 						// 这个节点掌握的数据可能还没commit
 						if rf.commitIndex < rf.matchIndex[server] {
 							rf.updateCommitIndex()
@@ -536,17 +538,14 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 								rf.commitCh <-struct{}{}
 							}
 						}
-					}else if rf.stat==Leader{
-						// TODO
-						rf.nextIndex[server] = reply.LastLogIndex + 1
-						if rf.matchIndex[server] >= rf.nextIndex[server] {
-							fmt.Printf(" TODO server = %v may be error!!\n", server)
-						}
+					}else if rf.stat == Leader{
+						// TODO ok??
+						rf.nextIndex[server] = max(rf.matchIndex[server], reply.LastLogIndex) + 1
 					}
 				} else {
 					fmt.Printf("leader = %v Need Send Snapshot to %v\n", rf.me, server)
 					if rf.log[0].Index != rf.snapshottedIndex {
-						fmt.Printf("me = %v log0 != snapshottedindex\n", rf.me)
+						fmt.Printf("TODO me = %v log0 != snapshottedindex\n", rf.me)
 					}
 					args := InstallSnapshotArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.log[0].Index, rf.log[0].Term, rf.persister.ReadSnapshot(), rf.log}
 					reply := InstallSnapshotReply{}
@@ -646,6 +645,7 @@ func (rf *Raft) updateCommitIndex() {
 		rf.mu.Lock()
 		rf.commitIndex = N
 		rf.mu.Unlock()
+		rf.persist()
 		fmt.Printf("Leader = %v updateCommitIndex = %v\n", rf.me, N)
 	}
 }

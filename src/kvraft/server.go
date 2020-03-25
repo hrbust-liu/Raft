@@ -141,7 +141,7 @@ func (kv *KVServer) Kill() {
 	kv.mu.Lock()
 	kv.stat = Dead
 	kv.mu.Unlock()
-	DPrintf("%v is dead\n", kv.me)
+	DPrintf("kvserver %v is dead\n", kv.me)
 }
 // 检查是否空间占用过大,需要做快照
 func (kv *KVServer) checkSnapShot(index int) {

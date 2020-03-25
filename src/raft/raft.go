@@ -222,7 +222,7 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 // 发送数据/作为心跳时 发送参数
 type AppendEntriesArgs struct {
 	Term int			// term
-	LeaderId int		// 我的id
+	LeaderId int		// 发送者的id
 	PrevLogIndex int	// 上一个index是多少  只有这两个参数都一样时，才可以接受本数据
 	PrevLogTerm int		// 上一个term时多少 只有这两个参数都一样时，才可以接受本数据
 	Entries []Entry		// 数据 即log
@@ -232,10 +232,11 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term int			// 当期iterm
 	Success bool		// 是否PrevLogIndex与PrevLogTerm一致，不一致代表需要中间部分数据
-//	PrevIndex int		// 所需最小的log索引, 从这个索引后面开始给我数据就可以 
-	LastLogIndex int	// 最后一个log的index
+	LastLogIndex int	// 最后一个log的index, 即需要的最小index
 }
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	fmt.Printf("me = %v Leader = %v, prevlogterm=%v, prevlogindex=%v,EntryLen=%v",
+				rf.me, args.LeaderId,args.PrevLogTerm,args.PrevLogIndex,len(args.Entries))
 
 	reply.Success= false
 	if args.Term < rf.currentTerm {
@@ -252,61 +253,62 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.persist()
 		//rf.updateStatTo(Follower)
 	}
-	if args.Term >= rf.currentTerm{
-		// 由于log不断增加，因此之前部分log可能会删除，log[0]的index可能不一样，PrevIndex则是当前raft下的偏移
-		FirstIndex := rf.log[0].Index
-		PrevIndex := args.PrevLogIndex - FirstIndex
-		if PrevIndex < 0 {
-			reply.LastLogIndex = rf.log[len(rf.log)-1].Index
-			return
-		}
-		if args.PrevLogIndex != -1 && args.PrevLogTerm != -1 {
-			if len(rf.log) - 1 < PrevIndex || rf.log[PrevIndex].Term != args.PrevLogTerm {	// 数据太新或者term已经分叉
-				reply.Success = false
-				if len(rf.log) - 1 >= PrevIndex {	// 数据分叉,之前Leader存储了垃圾log
-					tmp := PrevIndex
-					for tmp > 0 && rf.log[tmp].Term == rf.log[PrevIndex].Term {
-						tmp--
-					}
-					rf.log = rf.log[:tmp+1]
-				}					// else 说明数据太新，中间就数据还没更新过来呢
-			} else if rf.stat == Follower && rf.commitIndex <= args.LeaderCommit{
-				rf.mu.Lock()
-				reply.Success = true
-				j := 0
-				// 将已经存在且正确的数据保留，多余的舍弃
-				for i := PrevIndex + 1; i < len(rf.log) && j <len(args.Entries); i++{
-					if rf.log[i].Term != args.Entries[j].Term {
-						rf.log = rf.log[:i]
-						break
-					}
-					j++
-				}
 
-				// j之后则是本节点既不存在，又需要保存的log
-				rf.log = append(rf.log, args.Entries[j:]...)
-				rf.persist()
-				fmt.Printf("%v add len = %v\n", rf.me, len(args.Entries) - j)
-
-				// 有新的需要commit的
-				if args.LeaderCommit > rf.commitIndex {
-					if (len(args.Entries) > 0){
-						rf.commitIndex = min(args.LeaderCommit, args.Entries[len(args.Entries) -1].Index)
-					} else {
-						rf.commitIndex = args.LeaderCommit
-					}
-					rf.commitCh <- struct{}{}
-				}
-				rf.mu.Unlock()
-			} else {
-				fmt.Printf("TODO WT?? rfStat= %v, mycommitIndex = %v, args.commit = %v\n",rf.stat, rf.commitIndex, args.LeaderCommit)
-			}
-		}
-	} else {
-		fmt.Printf("TODO del 不存在吧\n")
+	// 由于log不断增加，因此之前部分log可能会删除，log[0]的index可能不一样，PrevIndex则是当前raft下的偏移
+	FirstIndex := rf.log[0].Index
+	PrevIndex := args.PrevLogIndex - FirstIndex
+	if PrevIndex < 0 {
+		reply.LastLogIndex = rf.log[len(rf.log)-1].Index
+		return
 	}
+	if args.PrevLogIndex != -1 && args.PrevLogTerm != -1 {
+		if len(rf.log) - 1 < PrevIndex || rf.log[PrevIndex].Term != args.PrevLogTerm {	// 数据太新或者term已经分叉
+			reply.Success = false
+			if len(rf.log) - 1 >= PrevIndex {	// 数据分叉,之前Leader存储了垃圾log
+				tmp := PrevIndex
+				for tmp > 0 && rf.log[tmp].Term == rf.log[PrevIndex].Term {
+					tmp--
+				}
+				rf.log = rf.log[:tmp+1]
+				rf.persist()
+			}					// else 说明数据太新，中间就数据还没更新过来呢
+		//} else if rf.stat == Follower && rf.commitIndex <= args.LeaderCommit{
+		} else if rf.stat == Follower {
+			rf.mu.Lock()
+			reply.Success = true
+			j := 0
+			// 将已经存在且正确的数据保留，多余的舍弃
+			for i := PrevIndex + 1; i < len(rf.log) && j <len(args.Entries); i++{
+				if rf.log[i].Term != args.Entries[j].Term {
+					rf.log = rf.log[:i]
+					break
+				}
+				j++
+			}
+
+			// j之后则是本节点既不存在，又需要保存的log
+			rf.log = append(rf.log, args.Entries[j:]...)
+			rf.persist()
+			fmt.Printf("%v add len = %v\n", rf.me, len(args.Entries) - j)
+
+			// 有新的需要commit的
+			if args.LeaderCommit > rf.commitIndex {
+				if (len(args.Entries) > 0){
+					rf.commitIndex = min(args.LeaderCommit, args.Entries[len(args.Entries) -1].Index)
+				} else {
+					rf.commitIndex = args.LeaderCommit
+				}
+				rf.commitCh <- struct{}{}
+			}
+			rf.mu.Unlock()
+		} else {	// 可能是Candidate/Dead等,或者拥有相同数量上一term的数据，但是commit还没更新
+		}
+	}
+
 	reply.Term = rf.currentTerm
 	reply.LastLogIndex = rf.log[len(rf.log) - 1].Index
+
+	fmt.Printf("reply me = %v lastLogIndex=%v,success?=%v",rf.me,reply.LastLogIndex, reply.Success)
 
 	if reply.Success {
 		go func() {
@@ -435,6 +437,7 @@ func (rf *Raft) Kill() {
 	rf.mu.Lock()
 	rf.stat = Dead
 	rf.mu.Unlock()
+	fmt.Printf("raft %v is dead\n");
 }
 // 成为候选人之后，试图进行选举
 func (rf *Raft) startElection() {
@@ -652,7 +655,7 @@ func (rf *Raft) updateCommitIndex() {
 // 无限循环在Follower/Candidate/Leader
 func (rf *Raft) mainLoop() {
 	for {
-//		fmt.Printf("my = %v log = %v\n", rf.me, rf.log)
+		// fmt.Printf("my = %v term = %v lastindex = %v lastterm = %v\n", rf.me, rf.currentTerm, rf.log[len(rf.log) -1].Term, rf.log[len(rf.log) -1].Index)
 		switch rf.stat{
 		case Follower:
 			// 追加数据,或者请求投票会让时间重置,超时则成为候选人

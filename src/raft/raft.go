@@ -137,6 +137,7 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) TakeSnapShot(index int, cid_seq map[int64]int32, kv map[string]string) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	fmt.Printf("me = %v Ready TakeSnapshot!!\n",rf.me)
 
 	FirstIndex := rf.log[0].Index
 	if index < FirstIndex {
@@ -155,6 +156,7 @@ func (rf *Raft) TakeSnapShot(index int, cid_seq map[int64]int32, kv map[string]s
 	}
 	snapshotsData := w2.Bytes()
 	rf.persister.SaveStateAndSnapshot(rf.getPersistData(), snapshotsData)
+	fmt.Printf("me = %v TakeSnapshot OK!!\n")
 }
 type InstallSnapshotArgs struct {
 	Term int				// 当前term
@@ -172,6 +174,9 @@ type InstallSnapshotReply struct {
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply)  {
+	if rf.stat == Dead {
+		return
+	}
 	fmt.Printf("%v ready to install snapshot\n", rf.me)
 
 	reply.Success = false
@@ -179,13 +184,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		reply.Term = rf.currentTerm
 		return
 	} else if args.Term > rf.currentTerm {	// 说明你的term更新了
-		rf.mu.Lock()
-		rf.currentTerm = args.Term
-		rf.voteFor = -1
-		rf.stat = Follower
-		rf.mu.Unlock()
-//		rf.updateStatTo(Follower)
-		rf.persist()
+		rf.safeUpdateStatTo(Follower, -1, args.Term)
 	}
 	reply.Term = rf.currentTerm
 	FirstIndex := rf.log[0].Index
@@ -235,23 +234,20 @@ type AppendEntriesReply struct {
 	LastLogIndex int	// 最后一个log的index, 即需要的最小index
 }
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	reply.Success = false
+	if rf.stat == Dead {
+//		return
+	}
 	fmt.Printf("me = %v Leader = %v, prevlogterm=%v, prevlogindex=%v,EntryLen=%v",
 				rf.me, args.LeaderId,args.PrevLogTerm,args.PrevLogIndex,len(args.Entries))
 
-	reply.Success= false
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		reply.LastLogIndex = rf.log[len(rf.log) - 1].Index
 		return
-	} else if args.Term > rf.currentTerm && rf.stat != Dead{
-		rf.mu.Lock()
-		rf.currentTerm = args.Term
-		rf.voteFor = -1
-		rf.stat = Follower
-		rf.mu.Unlock()
-		rf.persist()
-		//rf.updateStatTo(Follower)
+	} else if args.Term > rf.currentTerm {
+		rf.safeUpdateStatTo(Follower, -1, args.Term)
 	}
 
 	// 由于log不断增加，因此之前部分log可能会删除，log[0]的index可能不一样，PrevIndex则是当前raft下的偏移
@@ -308,7 +304,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 	reply.LastLogIndex = rf.log[len(rf.log) - 1].Index
 
-	fmt.Printf("reply me = %v lastLogIndex=%v,success?=%v",rf.me,reply.LastLogIndex, reply.Success)
+	fmt.Printf("reply me = %v lastLogIndex=%v,success?= %v\n",rf.me,reply.LastLogIndex, reply.Success)
 
 	if reply.Success {
 		go func() {
@@ -334,17 +330,14 @@ type RequestVoteReply struct {
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	reply.VoteGranted = false
+	if rf.stat == Dead {
+	//	return
+	}
 	fmt.Printf("me = %v arg.term = %v my.term = %v\n",rf.me ,args.Term, rf.currentTerm)
 
-	reply.VoteGranted = false
 	if args.Term>rf.currentTerm{
-		rf.mu.Lock()
-		rf.currentTerm = args.Term
-		rf.voteFor = -1
-		rf.stat = Follower
-		rf.mu.Unlock()
-		rf.persist()
-		//rf.updateStatTo(Follower)
+		rf.safeUpdateStatTo(Follower, -1, args.Term)
 	}
 	if args.Term >= rf.currentTerm && (rf.voteFor == -1 || rf.voteFor == args.CandidateId){
 		lastLogIndex := rf.log[len(rf.log) - 1].Index
@@ -367,31 +360,23 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 }
 
-func (rf *Raft) updateStatTo(stat int) { // 慎用, 可能本来也是Follower直接退出, 导致voteFor未改成-1
-	if rf.stat == stat || rf.stat == Dead{
+func (rf *Raft) safeUpdateStatTo(stat int, voteFor int, term int) {
+	rf.mu.Lock()
+	if rf.stat == Dead {
+		rf.mu.Unlock()
 		return
 	}
 	if stat == Follower {
-		rf.mu.Lock()
 		rf.stat = Follower
-		rf.voteFor = -1
-		rf.mu.Unlock()
-
-		fmt.Printf("%v update to Follower\n",rf.me)
-		rf.persist()
-	}
-	if stat == Candidate {
-		rf.mu.Lock()
+		if rf.voteFor != -2 {
+			rf.voteFor = voteFor
+			rf.currentTerm = term
+		}
+		fmt.Printf("%v update to Follower\n", rf.me)
+	} else if stat == Candidate {
 		rf.stat = Candidate
-		rf.mu.Unlock()
-		rf.persist()
-
-		fmt.Printf("%v update to Candidate\n",rf.me)
-		rf.startElection()	// 准备选举
-	}
-	if stat == Leader {
-		fmt.Printf("%v update to Leader\n",rf.me)
-		rf.mu.Lock()
+		fmt.Printf("%v update to Candidate\n", rf.me)
+	} else if stat == Leader{
 		rf.stat = Leader
 		rf.nextIndex = make([]int, len(rf.peers))
 		rf.matchIndex = make([]int, len(rf.peers))
@@ -401,9 +386,10 @@ func (rf *Raft) updateStatTo(stat int) { // 慎用, 可能本来也是Follower�
 				rf.matchIndex[i] = 0
 			}
 		}
-		rf.mu.Unlock()
-		rf.persist()
+		fmt.Printf("%v update to Leader\n",rf.me)
 	}
+	rf.mu.Unlock()
+	rf.persist()
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
@@ -434,10 +420,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 func (rf *Raft) Kill() {
+	fmt.Printf("me = %v wait lock to be killed\n")
 	rf.mu.Lock()
+	fmt.Printf("me = %v has get lock to be killed\n")
 	rf.stat = Dead
 	rf.mu.Unlock()
-	fmt.Printf("raft %v is dead\n");
+	fmt.Printf("raft %v is dead\n",rf.me);
 }
 // 成为候选人之后，试图进行选举
 func (rf *Raft) startElection() {
@@ -475,13 +463,7 @@ func (rf *Raft) startElection() {
 						rf.mu.Unlock()
 					}
 				} else if rf.stat == Candidate && ok && reply.Term > rf.currentTerm {
-					rf.mu.Lock()
-					rf.currentTerm = reply.Term
-					rf.voteFor = -1
-					rf.stat = Follower
-					rf.mu.Unlock()
-					rf.persist()
-					//rf.updateStatTo(Follower)
+					rf.safeUpdateStatTo(Follower, -1, reply.Term)
 				}
 			}(i)
 		}
@@ -519,13 +501,7 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 
 					// 有更新term, 自动降级为Follower
 					if reply.Term > rf.currentTerm {
-						rf.mu.Lock()
-						rf.currentTerm = reply.Term
-						rf.voteFor = -1
-						rf.stat = Follower
-						rf.mu.Unlock()
-						rf.persist()
-						//rf.updateStatTo(Follower)
+						rf.safeUpdateStatTo(Follower, -1, reply.Term)
 					}
 					if ok && rf.stat == Leader && reply.Success == true{
 						if len(rf.log) > 0 && len(args.Entries) > 0 {
@@ -555,13 +531,7 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 					ok := rf.sendInstallSnapshot(server, &args, &reply)
 					fmt.Printf("already send ok = %v reply = %v\n", ok, reply)
 					if reply.Term > rf.currentTerm {
-						rf.mu.Lock()
-						rf.currentTerm = reply.Term
-						rf.voteFor = -1
-						rf.stat = Follower
-						rf.mu.Unlock()
-						rf.persist()
-						//rf.updateStatTo(Follower)
+						rf.safeUpdateStatTo(Follower, -1, reply.Term)
 					}
 					if ok && rf.stat == Leader {
 						if reply.Success {
@@ -665,19 +635,20 @@ func (rf *Raft) mainLoop() {
 			case <-rf.voteCh:
 				rf.timer.Reset(getRandomTimeOut())
 			case <-rf.timer.C:
-				rf.updateStatTo(Candidate)
+				rf.safeUpdateStatTo(Candidate, -1, -1)
+				rf.startElection()
 			}
 		case Candidate:
 			// 收到数据说明有Leader,否则请求投票,票数过半则成为Leader
 			select {
 			case <- rf.appendCh:
 				rf.timer.Reset(getRandomTimeOut())
-				rf.updateStatTo(Follower)
+				rf.safeUpdateStatTo(Follower, -2, -2)
 			case <-rf.timer.C:
 				rf.startElection()
 			default:
 				if rf.voteCount > len(rf.peers)/2 {
-					rf.updateStatTo(Leader)
+					rf.safeUpdateStatTo(Leader, -2, -2)
 				}
 			}
 		case Leader:

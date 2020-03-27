@@ -27,7 +27,7 @@ type ApplyMsg struct {
 
 type Raft struct {
 	mu			sync.Mutex
-	peers		[]*labrpc.ClientEnd	// 所有节点
+	peers		[]*labrpc.ClientEnd	// 所有raft节点
 	persister	*Persister			// 用于持久化,序列化
 	me			int					// 自己序号
 
@@ -35,8 +35,8 @@ type Raft struct {
 	stat		int					// 状态
 
 	applyCh		chan	ApplyMsg	// commit消息放入该通道,传给server
-	appendCh	chan	struct{}
-	voteCh		chan	struct{}	// 等待投票管道
+	appendCh	chan	struct{}	// 被Leader呼唤，别想成为Candidate甚至Leader
+	voteCh		chan	struct{}	// 给别人投票了，别想成为Candidate甚至Leader
 	commitCh	chan	struct{}	// 等待commit管道,Leader率先发起commit,通过AppendEntries让每个节点进行commit
 	voteCount	int					// 获得的票数
 
@@ -45,7 +45,7 @@ type Raft struct {
 	log			[]Entry	// 当期记录的日志
 
 	commitIndex	int		// 被节点共识,可以提交的数据索引
-	lastApplied	int		// 本节点成功完成的序号，一定小于等于commit
+	lastApplied	int		// 本节点成功完成的序号(说明kv更新，client也返回了)，一定小于等于commit
 	nextIndex	[]int	// 猜测需要发送的数据
 	matchIndex	[]int	// 已经确认发送的数据，只能通过已经确定发送的来改变commitIndex
 
@@ -137,7 +137,7 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) TakeSnapShot(index int, cid_seq map[int64]int32, kv map[string]string) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Printf("me = %v Ready TakeSnapshot!!\n",rf.me)
+	fmt.Printf("me = %v Ready To TakeSnapshot!!\n",rf.me)
 
 	FirstIndex := rf.log[0].Index
 	if index < FirstIndex {
@@ -156,7 +156,7 @@ func (rf *Raft) TakeSnapShot(index int, cid_seq map[int64]int32, kv map[string]s
 	}
 	snapshotsData := w2.Bytes()
 	rf.persister.SaveStateAndSnapshot(rf.getPersistData(), snapshotsData)
-	fmt.Printf("me = %v TakeSnapshot OK!!\n")
+	fmt.Printf("me = %v TakeSnapshot OK!!\n", rf.me)
 }
 type InstallSnapshotArgs struct {
 	Term int				// 当前term
@@ -180,29 +180,28 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	fmt.Printf("%v ready to install snapshot\n", rf.me)
 
 	reply.Success = false
-	if args.Term < rf.currentTerm {	// 说明发送快照的leader还没我的term大
+	if args.Term < rf.currentTerm {	// 说明发送着快照的term太旧
 		reply.Term = rf.currentTerm
 		return
-	} else if args.Term > rf.currentTerm {	// 说明你的term更新了
+	} else if args.Term > rf.currentTerm {
 		rf.safeUpdateStatTo(Follower, -1, args.Term)
 	}
 	reply.Term = rf.currentTerm
 	FirstIndex := rf.log[0].Index
-	// 快照所带来的还不够
-	if args.LastIncludedIndex < FirstIndex {
+
+	if args.LastIncludedIndex < FirstIndex {	// 发送的快照还没我自己压缩的多，下次直接"从这"开始发数据就行
 		reply.PrevIndex = FirstIndex
 		fmt.Println("me = %v LastIncludedIndex = %v, FirstIndex = %v\n", rf.me, args.LastIncludedIndex, FirstIndex)
 		return
 	}
+	rf.mu.Lock()
 	rf.log = args.Entries
 	rf.snapshottedIndex = args.LastIncludedIndex
-//	if rf.lastApplied < args.LastIncludedIndex {
 	rf.lastApplied = args.LastIncludedIndex
-//	}
-//	if rf.commitIndex < args.LeaderCommit {
 	rf.commitIndex = args.LeaderCommit
-//	}
+
 	rf.persister.SaveStateAndSnapshot(rf.getPersistData(), args.Data)
+	rf.mu.Unlock()
 	msg := ApplyMsg{}
 	msg.Data = args.Data
 	msg.CommandValid = false
@@ -236,7 +235,7 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	reply.Success = false
 	if rf.stat == Dead {
-//		return
+		return
 	}
 	fmt.Printf("me = %v Leader = %v, prevlogterm=%v, prevlogindex=%v,EntryLen=%v",
 				rf.me, args.LeaderId,args.PrevLogTerm,args.PrevLogIndex,len(args.Entries))
@@ -294,7 +293,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				} else {
 					rf.commitIndex = args.LeaderCommit
 				}
-				rf.commitCh <- struct{}{}
+				go func () {
+					rf.commitCh <- struct{}{}
+				}()
 			}
 			rf.mu.Unlock()
 		} else {	// 可能是Candidate/Dead等,或者拥有相同数量上一term的数据，但是commit还没更新
@@ -332,7 +333,7 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = false
 	if rf.stat == Dead {
-	//	return
+		return
 	}
 	fmt.Printf("me = %v arg.term = %v my.term = %v\n",rf.me ,args.Term, rf.currentTerm)
 
@@ -420,9 +421,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 func (rf *Raft) Kill() {
-	fmt.Printf("me = %v wait lock to be killed\n")
+	fmt.Printf("me = %v wait lock to be killed\n", rf.me)
 	rf.mu.Lock()
-	fmt.Printf("me = %v has get lock to be killed\n")
+	fmt.Printf("me = %v has get lock to be killed\n", rf.me)
 	rf.stat = Dead
 	rf.mu.Unlock()
 	fmt.Printf("raft %v is dead\n",rf.me);
@@ -514,7 +515,9 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 						if rf.commitIndex < rf.matchIndex[server] {
 							rf.updateCommitIndex()
 							if rf.commitIndex <= reply.LastLogIndex {
-								rf.commitCh <-struct{}{}
+								go func () {
+									rf.commitCh <-struct{}{}
+								}()
 							}
 						}
 					}else if rf.stat == Leader{
@@ -540,7 +543,9 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 
 							if rf.commitIndex < rf.matchIndex[server] {
 								rf.updateCommitIndex()
-								rf.commitCh <- struct{}{}
+								go func () {
+									rf.commitCh <- struct{}{}
+								}()
 							}
 						} else {
 							rf.nextIndex[server] = reply.PrevIndex + 1
@@ -643,7 +648,7 @@ func (rf *Raft) mainLoop() {
 			select {
 			case <- rf.appendCh:
 				rf.timer.Reset(getRandomTimeOut())
-				rf.safeUpdateStatTo(Follower, -2, -2)
+				rf.safeUpdateStatTo(Follower, -1, -2)
 			case <-rf.timer.C:
 				rf.startElection()
 			default:

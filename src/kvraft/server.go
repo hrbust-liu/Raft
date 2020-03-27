@@ -68,10 +68,10 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	seq, ok := kv.cid_seq[args.Cid]
 	kv.mu.Unlock()
 	if ok && seq > args.Seq {	// 该clerk下更新的数据都已经commit并执行完,因此你这个请求我可以完成
-		DPrintf("Get 应该没问题 my id = %v\n",kv.me)
-		reply.Value = kv.keyValue[args.Key]
-		reply.Err = OK
-		return
+		// DPrintf("Get 应该没问题 my id = %v\n",kv.me)
+		// reply.Value = kv.keyValue[args.Key]
+		// reply.Err = OK
+		// return
 	}
 	cmd := Op{args.Key, "", "Get", args.Cid, args.Seq}
 	index,_,isLeader := kv.rf.Start(cmd)	// 抛出请求,并判断该节点是否为Leader, 返回一个全局唯一的序号,最为本次提交的index
@@ -86,7 +86,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		case op = <-ch:
 			reply.Err = OK
 			DPrintf("success Get %v agree, seq = %v, index = %v\n", kv.me, op.Seq, index)
-			close(ch)
+			//close(ch)
 		case <-time.After(1000*time.Millisecond):
 			reply.Err = ErrTimeOut
 			reply.WrongLeader = true
@@ -121,7 +121,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		case op = <-ch:
 			reply.Err = OK
 			DPrintf("success Put/Append %v agree, index = %v, key = %v, value = %v\n", kv.me, index, op.Key, op.Value)
-			close(ch)
+			//close(ch)
 		case <-time.After(1000*time.Millisecond):
 			reply.Err = ErrTimeOut
 			reply.WrongLeader = true
@@ -153,7 +153,11 @@ func (kv *KVServer) checkSnapShot(index int) {
 		return
 	}
 	// 不加锁可能导致有新操作到kv上，而log却没有以为某些操作没有做，从而多做了一次
-	go kv.rf.TakeSnapShot(index, kv.cid_seq, kv.keyValue)
+	go func() {
+		kv.mu.Lock()
+		kv.rf.TakeSnapShot(index, kv.cid_seq, kv.keyValue)
+		kv.mu.Unlock()
+	}()
 }
 // 等待提交消息
 func (kv *KVServer) waitSubmitLoop() {
@@ -200,7 +204,7 @@ func (kv *KVServer) readSnapShot(data []byte) {
 
 	if d.Decode(&cid_seq) != nil ||
 		d.Decode(&keyValue) != nil {
-		log.Fatal("readSnapShot decode err:")
+		log.Fatal("readSnapShot decode err:\n")
 	} else {
 		kv.cid_seq = cid_seq
 		kv.keyValue = keyValue

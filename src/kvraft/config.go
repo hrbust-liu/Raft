@@ -366,7 +366,6 @@ func (cfg *config) end() {
 		nrpc := cfg.rpcTotal() - cfg.rpcs0
 		ops := atomic.LoadInt32(&cfg.ops)
 
-		fmt.Printf("  ...Passed..")
-		fmt.Printf("  %4.1f %d %5d %4d\n", t, npeers, nrpc, ops)
+		fmt.Printf("  ...Passed..  %4.1f %d %5d %4d\n", t, npeers, nrpc, ops)
 	}
 }

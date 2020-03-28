@@ -237,8 +237,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.stat == Dead {
 		return
 	}
-	fmt.Printf("me = %v Leader = %v, prevlogterm=%v, prevlogindex=%v,EntryLen=%v",
-				rf.me, args.LeaderId,args.PrevLogTerm,args.PrevLogIndex,len(args.Entries))
+	fmt.Printf("me = %v myterm = %v Leader = %v, term = %v, prevlogterm=%v, prevlogindex=%v,EntryLen=%v\n",
+				rf.me, rf.currentTerm, args.LeaderId, args.Term, args.PrevLogTerm,args.PrevLogIndex,len(args.Entries))
 
 	if args.Term < rf.currentTerm {
 		reply.Success = false
@@ -267,8 +267,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.log = rf.log[:tmp+1]
 				rf.persist()
 			}					// else 说明数据太新，中间就数据还没更新过来呢
-		//} else if rf.stat == Follower && rf.commitIndex <= args.LeaderCommit{
-		} else if rf.stat == Follower {
+		} else if rf.stat == Follower && rf.commitIndex <= args.LeaderCommit{
+		//} else if rf.stat == Follower {
 			rf.mu.Lock()
 			reply.Success = true
 			j := 0
@@ -433,11 +433,11 @@ func (rf *Raft) startElection() {
 	if rf.stat == Dead{
 		return
 	}
-	fmt.Printf("%v begin start election \n", rf.me)
 	rf.mu.Lock()
 	rf.voteFor = rf.me
 	rf.currentTerm += 1
 	rf.mu.Unlock()
+	fmt.Printf("%v begin start election term = %v\n", rf.me, rf.currentTerm)
 
 	rf.voteCount = 1
 	rf.timer.Reset(getRandomTimeOut())

@@ -31,3 +31,6 @@ config.go		创建network,使得kvserver等都能工作
 labgob 目录  
 labgob.go		完成编码检查等工作  
 
+备注:
+raft.currentTerm大不能决定一切，对于单节点网络分区,term会无限上涨.
+commit大能决定一切,只有拥有最大commit日志的才可能成为下一界leader.

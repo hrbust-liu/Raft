@@ -60,7 +60,7 @@ type Entry struct {
 func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
-	term =rf.currentTerm
+	term = rf.currentTerm
 	isleader = (rf.stat == Leader)
 	return term, isleader
 }
@@ -177,7 +177,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	if rf.stat == Dead {
 		return
 	}
-	fmt.Printf("%v ready to install snapshot\n", rf.me)
+	fmt.Printf("me = %v ready to install snapshot\n", rf.me)
 
 	reply.Success = false
 	if args.Term < rf.currentTerm {	// 说明发送着快照的term太旧
@@ -249,14 +249,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.safeUpdateStatTo(Follower, -1, args.Term)
 	}
 
-	// 由于log不断增加，因此之前部分log可能会删除，log[0]的index可能不一样，PrevIndex则是当前raft下的偏移
+	rf.mu.Lock()
 	FirstIndex := rf.log[0].Index
-	PrevIndex := args.PrevLogIndex - FirstIndex
-	if PrevIndex < 0 {
-		reply.LastLogIndex = rf.log[len(rf.log)-1].Index
-		return
-	}
-	if args.PrevLogIndex != -1 && args.PrevLogTerm != -1 {
+	PrevIndex := args.PrevLogIndex - FirstIndex	// 可能发生快照, PreveIndex为当前偏移
+
+	if PrevIndex >= 0 && args.PrevLogIndex != -1 && args.PrevLogTerm != -1 { // PrevIndex < 0 说明给的数据太老了，我无法判断是否能对接
 		if len(rf.log) - 1 < PrevIndex || rf.log[PrevIndex].Term != args.PrevLogTerm {	// 数据太新或者term已经分叉
 			reply.Success = false
 			if len(rf.log) - 1 >= PrevIndex {	// 数据分叉,之前Leader存储了垃圾log
@@ -268,8 +265,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.persist()
 			}					// else 说明数据太新，中间就数据还没更新过来呢
 		} else if rf.stat == Follower && rf.commitIndex <= args.LeaderCommit{
-		//} else if rf.stat == Follower {
-			rf.mu.Lock()
 			reply.Success = true
 			j := 0
 			// 将已经存在且正确的数据保留，多余的舍弃
@@ -284,7 +279,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// j之后则是本节点既不存在，又需要保存的log
 			rf.log = append(rf.log, args.Entries[j:]...)
 			rf.persist()
-			fmt.Printf("%v add len = %v\n", rf.me, len(args.Entries) - j)
+			fmt.Printf("me = %v add len = %v\n", rf.me, len(args.Entries) - j)
 
 			// 有新的需要commit的
 			if args.LeaderCommit > rf.commitIndex {
@@ -293,19 +288,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				} else {
 					rf.commitIndex = args.LeaderCommit
 				}
+				rf.persist()
 				go func () {
 					rf.commitCh <- struct{}{}
 				}()
 			}
-			rf.mu.Unlock()
-		} else {	// 可能是Candidate/Dead等,或者拥有相同数量上一term的数据，但是commit还没更新
-		}
-	}
+		}	// else 可能是Candidate/Dead等,或者拥有相同数量上一term的数据，但是commit还没更新
+	}	// 即使没有新数据Append一下就当心跳了
+	rf.mu.Unlock()
 
 	reply.Term = rf.currentTerm
 	reply.LastLogIndex = rf.log[len(rf.log) - 1].Index
 
-	fmt.Printf("reply me = %v lastLogIndex=%v,success?= %v\n",rf.me,reply.LastLogIndex, reply.Success)
+	fmt.Printf("reply me = %v lastLogIndex = %v, success = %v\n",rf.me,reply.LastLogIndex, reply.Success)
 
 	if reply.Success {
 		go func() {
@@ -373,10 +368,10 @@ func (rf *Raft) safeUpdateStatTo(stat int, voteFor int, term int) {
 			rf.voteFor = voteFor
 			rf.currentTerm = term
 		}
-		fmt.Printf("%v update to Follower\n", rf.me)
+		fmt.Printf("%v update to Follower, voteFor = %v, term = %v\n", rf.me, rf.voteFor, rf.currentTerm)
 	} else if stat == Candidate {
 		rf.stat = Candidate
-		fmt.Printf("%v update to Candidate\n", rf.me)
+		fmt.Printf("%v update to Candidate, term = %v\n", rf.me, rf.currentTerm)
 	} else if stat == Leader{
 		rf.stat = Leader
 		rf.nextIndex = make([]int, len(rf.peers))
@@ -387,7 +382,7 @@ func (rf *Raft) safeUpdateStatTo(stat int, voteFor int, term int) {
 				rf.matchIndex[i] = 0
 			}
 		}
-		fmt.Printf("%v update to Leader\n",rf.me)
+		fmt.Printf("%v update to Leader, term = %v\n", rf.me, rf.currentTerm)
 	}
 	rf.mu.Unlock()
 	rf.persist()
@@ -416,17 +411,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.mu.Unlock()
 		rf.persist()
 	}
-	fmt.Printf("me = %v, term = %v isLeader = %v\n",rf.me, term, isLeader)
+	fmt.Printf("me = %v, term = %v isLeader = %v index = %v\n",rf.me, term, isLeader, index)
 	return index, term, isLeader
 }
 
 func (rf *Raft) Kill() {
-	fmt.Printf("me = %v wait lock to be killed\n", rf.me)
 	rf.mu.Lock()
-	fmt.Printf("me = %v has get lock to be killed\n", rf.me)
 	rf.stat = Dead
 	rf.mu.Unlock()
-	fmt.Printf("raft %v is dead\n",rf.me);
+	fmt.Printf("raft me = %v is dead\n",rf.me);
 }
 // 成为候选人之后，试图进行选举
 func (rf *Raft) startElection() {
@@ -437,7 +430,7 @@ func (rf *Raft) startElection() {
 	rf.voteFor = rf.me
 	rf.currentTerm += 1
 	rf.mu.Unlock()
-	fmt.Printf("%v begin start election term = %v\n", rf.me, rf.currentTerm)
+	fmt.Printf("me = %v begin start election term = %v\n", rf.me, rf.currentTerm)
 
 	rf.voteCount = 1
 	rf.timer.Reset(getRandomTimeOut())
@@ -458,7 +451,7 @@ func (rf *Raft) startElection() {
 				ok := rf.sendRequestVote(server, &args, &reply)
 				if rf.stat == Candidate && ok && reply.Term == rf.currentTerm{
 					if reply.VoteGranted {	// else说明投票给别人
-						fmt.Printf("%v vote for me %v\n",server,rf.me)
+						fmt.Printf("server = %v vote for me = %v\n", server, rf.me)
 						rf.mu.Lock()
 						rf.voteCount += 1
 						rf.mu.Unlock()
@@ -479,37 +472,34 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 				// <说明日志已经删除，只能获取快照
 				fmt.Printf("Leader = %v peer %v matchIndex = %v nextIndex = %v, FirstIndex = %v\n", rf.me, server, rf.matchIndex[server], rf.nextIndex[server], FirstIndex)
 				if rf.nextIndex[server] > FirstIndex {
+					rf.mu.Lock()
 					args := AppendEntriesArgs{}
 					reply := AppendEntriesReply{}
 					args.Term = rf.currentTerm
 					args.LeaderId = rf.me
 					args.LeaderCommit = rf.commitIndex
-					args.PrevLogIndex = -1
-					args.PrevLogTerm = -1
 
-					index := max(min(rf.matchIndex[server], rf.log[len(rf.log)-1].Index) - FirstIndex, 0)
-					if len(rf.log) > 0 && len(rf.log) > index {
-						args.PrevLogIndex = rf.log[index].Index
-						args.PrevLogTerm = rf.log[index].Term
-						if index < rf.log[len(rf.log)-1].Index {	// 发送index之后的
-							args.Entries = rf.log[index+1:]
-						} else {
-							args.Entries = make([]Entry, 0)
-						}
+					index := max(min(rf.matchIndex[server], rf.log[len(rf.log)-1].Index) - rf.log[0].Index, 0)
+					args.PrevLogIndex = rf.log[index].Index
+					args.PrevLogTerm = rf.log[index].Term
+					if index < len(rf.log) {
+						args.Entries = rf.log[index+1:]
+					} else {
+						args.Entries = make([]Entry, 0)
 					}
+					rf.mu.Unlock()
+
 					ok := rf.sendAppendEntries(server, &args, &reply)
-					ok = ok && reply.Term == rf.currentTerm
 
 					// 有更新term, 自动降级为Follower
-					if reply.Term > rf.currentTerm {
+					if ok && reply.Term > rf.currentTerm {
 						rf.safeUpdateStatTo(Follower, -1, reply.Term)
-					}
-					if ok && rf.stat == Leader && reply.Success == true{
+					} else if ok && rf.stat == Leader && reply.Success == true{
 						if len(rf.log) > 0 && len(args.Entries) > 0 {
 							rf.nextIndex[server] = args.Entries[len(args.Entries) - 1].Index + 1
 							rf.matchIndex[server] = rf.nextIndex[server] - 1
 						}
-						fmt.Printf("Leader = %v, 给 %v 数据追加成功,matchIndex = %v, my commitIndex = %v\n",rf.me, server, rf.matchIndex[server], rf.commitIndex)
+						fmt.Printf("Leader = %v, 给 %v 数据追加成功 matchIndex = %v, my commitIndex = %v\n",rf.me, server, rf.matchIndex[server], rf.commitIndex)
 
 						// 这个节点掌握的数据可能还没commit
 						if rf.commitIndex < rf.matchIndex[server] {
@@ -520,25 +510,25 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 								}()
 							}
 						}
-					}else if rf.stat == Leader{
-						// TODO ok??
+					} else if ok && rf.stat == Leader{
 						rf.nextIndex[server] = max(rf.matchIndex[server], reply.LastLogIndex) + 1
 					}
 				} else {
-					fmt.Printf("leader = %v Need Send Snapshot to %v\n", rf.me, server)
+					fmt.Printf("Leader = %v Need Send Snapshot to %v\n", rf.me, server)
 					if rf.log[0].Index != rf.snapshottedIndex {
 						fmt.Printf("TODO me = %v log0 != snapshottedindex\n", rf.me)
 					}
+					rf.mu.Lock()
 					args := InstallSnapshotArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.log[0].Index, rf.log[0].Term, rf.persister.ReadSnapshot(), rf.log}
+					rf.mu.Unlock()
 					reply := InstallSnapshotReply{}
 					ok := rf.sendInstallSnapshot(server, &args, &reply)
-					fmt.Printf("already send ok = %v reply = %v\n", ok, reply)
 					if reply.Term > rf.currentTerm {
 						rf.safeUpdateStatTo(Follower, -1, reply.Term)
 					}
 					if ok && rf.stat == Leader {
 						if reply.Success {
-							rf.nextIndex[server] = args.Entries[len(args.Entries)-1].Index+1
+							rf.nextIndex[server] = args.Entries[len(args.Entries)-1].Index + 1
 							rf.matchIndex[server] = rf.nextIndex[server] - 1
 
 							if rf.commitIndex < rf.matchIndex[server] {
@@ -567,29 +557,24 @@ func (rf *Raft) doCommitLoop() {
 			case <-rf.commitCh:
 			for {
 				if rf.commitIndex > rf.lastApplied {
+					rf.mu.Lock()
 					FirstIndex := rf.log[0].Index
-					// TODO 如果小于，是否说明lastApplied数据有问题,如读取了其他的快照导致apply已经落后了
 					if rf.lastApplied + 1 >= FirstIndex {
 						msg := ApplyMsg{}
 
-						rf.mu.Lock()
 						rf.lastApplied += 1
-						index := min(rf.lastApplied - rf.log[0].Index, len(rf.log) - 1)
-						if(rf.log[len(rf.log) - 1].Index < rf.lastApplied){
-							fmt.Printf("TODO lastLog < lastApplied ???\n")
-						}
+						index := rf.lastApplied - rf.log[0].Index
 						msg.Command = rf.log[index].Command
 						msg.CommandIndex = rf.lastApplied
-						rf.mu.Unlock()
 
 						// 真正在本节点提交数据,编号为rf.lastApplied
-						fmt.Printf("%v Commit! commitIndex = %v apply = %v Command = %v\n",rf.me ,rf.commitIndex, rf.lastApplied, msg.Command)
+						fmt.Printf("me = %v Commit! commitIndex = %v apply = %v Command = %v\n",rf.me ,rf.commitIndex, rf.lastApplied, msg.Command)
 						msg.CommandValid = true
 						rf.applyCh <- msg
 					} else {
-						fmt.Printf("LMH Do %v Commit! apply = %v < FirstIndex = %v\n",rf.me ,rf.lastApplied, FirstIndex)
-						log.Fatal("commit error:")
+						log.Fatal("%v commit error: apply = %v < FirstIndex = %v\n", rf.me, rf.lastApplied, FirstIndex)
 					}
+					rf.mu.Unlock()
 				} else {
 					break
 				}
@@ -615,9 +600,7 @@ func (rf *Raft) updateCommitIndex() {
 		}
 		if cnt > len(rf.peers)/2 {
 			N = i
-		} else {
-			// 不能break,虽然之前的不是当前term产生的数据，但如果其他peers都追上来，允许N在较大时候直接commit
-		}
+		} // else 不能break,虽然之前的不是当前term产生的数据，但如果其他peers都追上来，允许N在较大时候直接commit
 	}
 	if N > rf.commitIndex && rf.stat == Leader {
 		rf.mu.Lock()

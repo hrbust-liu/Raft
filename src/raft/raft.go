@@ -137,15 +137,13 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) TakeSnapShot(index int, cid_seq map[int64]int32, kv map[string]string) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Printf("me = %v Ready To TakeSnapshot!!\n",rf.me)
+	fmt.Printf("me = %v Ready To TakeSnapshot!! index = %v\n", rf.me, index)
 
 	FirstIndex := rf.log[0].Index
 	if index < FirstIndex {
-		fmt.Printf("TakeSnapshot index < FirstIndex\n")
 		return
 	}
 	rf.snapshottedIndex = index
-	fmt.Printf("rf.me = %v TakeSnapshot snapshottedIndex = %v\n", rf.me, rf.snapshottedIndex)
 	rf.log = rf.log[index - FirstIndex:]	// 给log日志留一个，否则不好操作
 
 	w2 := new(bytes.Buffer)
@@ -189,9 +187,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	reply.Term = rf.currentTerm
 	FirstIndex := rf.log[0].Index
 
-	if args.LastIncludedIndex < FirstIndex {	// 发送的快照还没我自己压缩的多，下次直接"从这"开始发数据就行
+	if args.LastIncludedIndex < FirstIndex {	// 发送的快照还没我自己压缩的多，下次直接 FirstIndex开始发数据就行
 		reply.PrevIndex = FirstIndex
-		fmt.Println("me = %v LastIncludedIndex = %v, FirstIndex = %v\n", rf.me, args.LastIncludedIndex, FirstIndex)
 		return
 	}
 	rf.mu.Lock()
@@ -202,6 +199,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.persister.SaveStateAndSnapshot(rf.getPersistData(), args.Data)
 	rf.mu.Unlock()
+
 	msg := ApplyMsg{}
 	msg.Data = args.Data
 	msg.CommandValid = false
@@ -237,7 +235,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.stat == Dead {
 		return
 	}
-	fmt.Printf("me = %v myterm = %v Leader = %v, term = %v, prevlogterm=%v, prevlogindex=%v,EntryLen=%v\n",
+	fmt.Printf("me = %v myterm = %v Leader = %v, term = %v, prevlogterm = %v, prevlogindex = %v, EntryLen = %v\n",
 				rf.me, rf.currentTerm, args.LeaderId, args.Term, args.PrevLogTerm,args.PrevLogIndex,len(args.Entries))
 
 	if args.Term < rf.currentTerm {
@@ -253,7 +251,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	FirstIndex := rf.log[0].Index
 	PrevIndex := args.PrevLogIndex - FirstIndex	// 可能发生快照, PreveIndex为当前偏移
 
-	if PrevIndex >= 0 && args.PrevLogIndex != -1 && args.PrevLogTerm != -1 { // PrevIndex < 0 说明给的数据太老了，我无法判断是否能对接
+	// PrevIndex < 0 说明给的数据太老了，我无法判断是否能对接, rf.commitIndex > 说明你的commit还没我多,不能改变我
+	if PrevIndex >= 0 && args.PrevLogIndex != -1 && args.PrevLogTerm != -1 && rf.commitIndex <= args.LeaderCommit{
 		if len(rf.log) - 1 < PrevIndex || rf.log[PrevIndex].Term != args.PrevLogTerm {	// 数据太新或者term已经分叉
 			reply.Success = false
 			if len(rf.log) - 1 >= PrevIndex {	// 数据分叉,之前Leader存储了垃圾log
@@ -264,7 +263,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.log = rf.log[:tmp+1]
 				rf.persist()
 			}					// else 说明数据太新，中间就数据还没更新过来呢
-		} else if rf.stat == Follower && rf.commitIndex <= args.LeaderCommit{
+		} else if rf.stat == Follower {
 			reply.Success = true
 			j := 0
 			// 将已经存在且正确的数据保留，多余的舍弃
@@ -451,7 +450,7 @@ func (rf *Raft) startElection() {
 				ok := rf.sendRequestVote(server, &args, &reply)
 				if rf.stat == Candidate && ok && reply.Term == rf.currentTerm{
 					if reply.VoteGranted {	// else说明投票给别人
-						fmt.Printf("server = %v vote for me = %v\n", server, rf.me)
+						fmt.Printf("peer = %v vote for me = %v\n", server, rf.me)
 						rf.mu.Lock()
 						rf.voteCount += 1
 						rf.mu.Unlock()
@@ -479,14 +478,10 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 					args.LeaderId = rf.me
 					args.LeaderCommit = rf.commitIndex
 
-					index := max(min(rf.matchIndex[server], rf.log[len(rf.log)-1].Index) - rf.log[0].Index, 0)
-					args.PrevLogIndex = rf.log[index].Index
-					args.PrevLogTerm = rf.log[index].Term
-					if index < len(rf.log) {
-						args.Entries = rf.log[index+1:]
-					} else {
-						args.Entries = make([]Entry, 0)
-					}
+					previndex := max(min(rf.nextIndex[server], rf.log[len(rf.log)-1].Index) - rf.log[0].Index - 1, 0)
+					args.PrevLogIndex = rf.log[previndex].Index
+					args.PrevLogTerm = rf.log[previndex].Term
+					args.Entries = rf.log[previndex+1:]
 					rf.mu.Unlock()
 
 					ok := rf.sendAppendEntries(server, &args, &reply)
@@ -499,7 +494,7 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 							rf.nextIndex[server] = args.Entries[len(args.Entries) - 1].Index + 1
 							rf.matchIndex[server] = rf.nextIndex[server] - 1
 						}
-						fmt.Printf("Leader = %v, 给 %v 数据追加成功 matchIndex = %v, my commitIndex = %v\n",rf.me, server, rf.matchIndex[server], rf.commitIndex)
+						fmt.Printf("Leader = %v, 给 peer = %v 数据追加成功 matchIndex = %v, my commitIndex = %v\n",rf.me, server, rf.matchIndex[server], rf.commitIndex)
 
 						// 这个节点掌握的数据可能还没commit
 						if rf.commitIndex < rf.matchIndex[server] {
@@ -515,14 +510,17 @@ func (rf *Raft) broadcastAppendEntriesRPC() {
 					}
 				} else {
 					fmt.Printf("Leader = %v Need Send Snapshot to %v\n", rf.me, server)
+					rf.mu.Lock()
 					if rf.log[0].Index != rf.snapshottedIndex {
-						fmt.Printf("TODO me = %v log0 != snapshottedindex\n", rf.me)
+						fmt.Printf("TODO me = %v log0 = %v != snapshottedindex = %v\n", rf.me, rf.snapshottedIndex)
 					}
+					rf.mu.Unlock()
 					rf.mu.Lock()
 					args := InstallSnapshotArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.log[0].Index, rf.log[0].Term, rf.persister.ReadSnapshot(), rf.log}
 					rf.mu.Unlock()
 					reply := InstallSnapshotReply{}
 					ok := rf.sendInstallSnapshot(server, &args, &reply)
+
 					if reply.Term > rf.currentTerm {
 						rf.safeUpdateStatTo(Follower, -1, reply.Term)
 					}
@@ -558,23 +556,18 @@ func (rf *Raft) doCommitLoop() {
 			for {
 				if rf.commitIndex > rf.lastApplied {
 					rf.mu.Lock()
-					FirstIndex := rf.log[0].Index
-					if rf.lastApplied + 1 >= FirstIndex {
-						msg := ApplyMsg{}
+					rf.lastApplied += 1
+					index := rf.lastApplied - rf.log[0].Index
 
-						rf.lastApplied += 1
-						index := rf.lastApplied - rf.log[0].Index
-						msg.Command = rf.log[index].Command
-						msg.CommandIndex = rf.lastApplied
-
-						// 真正在本节点提交数据,编号为rf.lastApplied
-						fmt.Printf("me = %v Commit! commitIndex = %v apply = %v Command = %v\n",rf.me ,rf.commitIndex, rf.lastApplied, msg.Command)
-						msg.CommandValid = true
-						rf.applyCh <- msg
-					} else {
-						log.Fatal("%v commit error: apply = %v < FirstIndex = %v\n", rf.me, rf.lastApplied, FirstIndex)
-					}
+					msg := ApplyMsg{}
+					msg.Command = rf.log[index].Command
+					msg.CommandIndex = rf.lastApplied
 					rf.mu.Unlock()
+
+					// 真正在本节点提交数据,编号为rf.lastApplied
+					fmt.Printf("me = %v Commit! commitIndex = %v apply = %v Command = %v\n",rf.me ,rf.commitIndex, rf.lastApplied, msg.Command)
+					msg.CommandValid = true
+					rf.applyCh <- msg
 				} else {
 					break
 				}
